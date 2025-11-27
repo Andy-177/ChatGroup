@@ -165,6 +165,9 @@ class RobotConfig(BaseModel):
     auto_respond_to_ai: bool = True  # 是否自动回应其他AI的消息
     auto_respond_to_all: bool = False  # 是否自动回应所有公共消息
     color: Optional[str] = None  # 机器人在聊天中的显示颜色
+    api_key: Optional[str] = None  # 机器人专用 API Key，为空则使用全局
+    base_url: Optional[str] = None  # 机器人专用 API URL，为空则使用全局
+    model: Optional[str] = None  # 机器人专用模型，为空则使用全局
 
 # -------------------------- 配置管理 --------------------------
 class ConfigManager:
@@ -180,6 +183,7 @@ class ConfigManager:
             "user_name": "用户",  # 默认用户名
             "allow_ai_conversations": True,  # 是否允许AI间自动对话
             "max_ai_conversation_turns": 10,  # 最大自动对话轮次
+            "no_history": False,  # 是否不发送历史记录
         }
         self.load_main_config()
 
@@ -225,6 +229,12 @@ class ConfigManager:
                     all_robots = sorted(self.list_robots())
                     index = all_robots.index(robot_name)
                     data["color"] = DEFAULT_ROBOT_COLORS[index % len(DEFAULT_ROBOT_COLORS)]
+                if "api_key" not in data:
+                    data["api_key"] = None
+                if "base_url" not in data:
+                    data["base_url"] = None
+                if "model" not in data:
+                    data["model"] = None
                 return RobotConfig(**data)
         except Exception as e:
             messagebox.showerror("机器人配置错误", f"加载{robot_name}失败: {str(e)}")
@@ -419,10 +429,11 @@ class AIGroupChatGUI:
         max_turns = self.config_manager.get("max_ai_conversation_turns", 10)
         loop_status = "启用" if self.infinite_loop else "禁用"
         dev_status = "启用" if self.dev_mode else "禁用"
+        no_history_status = "启用" if self.config_manager.get("no_history") else "禁用"
         self.status_var.set(
             f"就绪 | 已加载机器人: {len(self.active_robots)} 个 | "
             f"当前轮次: {self.ai_conversation_turns}/{max_turns} | "
-            f"无限轮回: {loop_status} | 开发者模式: {dev_status}"
+            f"无限轮回: {loop_status} | 开发者模式: {dev_status} | 不发送历史记录: {no_history_status}"
         )
 
     def toggle_dev_mode(self):
@@ -431,10 +442,11 @@ class AIGroupChatGUI:
         dev_status = "启用" if self.dev_mode else "禁用"
         max_turns = self.config_manager.get("max_ai_conversation_turns", 10)
         loop_status = "启用" if self.infinite_loop else "禁用"
+        no_history_status = "启用" if self.config_manager.get("no_history") else "禁用"
         self.status_var.set(
             f"就绪 | 已加载机器人: {len(self.active_robots)} 个 | "
             f"当前轮次: {self.ai_conversation_turns}/{max_turns} | "
-            f"无限轮回: {loop_status} | 开发者模式: {dev_status}"
+            f"无限轮回: {loop_status} | 开发者模式: {dev_status} | 不发送历史记录: {no_history_status}"
         )
 
     def start_message_processor(self):
@@ -494,10 +506,19 @@ class AIGroupChatGUI:
             text="允许AI之间自动对话",
             variable=self.allow_ai_conv_var
         ).grid(row=0, column=0, columnspan=2, sticky=tk.W, pady=10)
-        ttk.Label(conv_frame, text="最大自动对话轮次:").grid(row=1, column=0, sticky=tk.W, pady=5)
+
+        self.no_history_var = tk.BooleanVar(value=self.config_manager.get("no_history", False))
+        ttk.Checkbutton(
+            conv_frame,
+            text="不发送历史记录",
+            variable=self.no_history_var
+        ).grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=10)
+        ttk.Label(conv_frame, text="(开启后AI只会收到系统提示词和当前消息，不会收到之前的聊天历史记录)").grid(row=2, column=0, columnspan=2, sticky=tk.W, pady=5)
+
+        ttk.Label(conv_frame, text="最大自动对话轮次:").grid(row=3, column=0, sticky=tk.W, pady=5)
         self.max_turns_var = tk.StringVar(value=str(self.config_manager.get("max_ai_conversation_turns", 10)))
-        ttk.Entry(conv_frame, textvariable=self.max_turns_var, width=10).grid(row=1, column=1, sticky=tk.W, pady=5)
-        ttk.Label(conv_frame, text="(每轮指所有活跃机器人完成一次回应)").grid(row=1, column=2, sticky=tk.W, pady=5)
+        ttk.Entry(conv_frame, textvariable=self.max_turns_var, width=10).grid(row=3, column=1, sticky=tk.W, pady=5)
+        ttk.Label(conv_frame, text="(每轮指所有活跃机器人完成一次回应)").grid(row=3, column=2, sticky=tk.W, pady=5)
         # 默认机器人设置标签页
         robot_frame = ttk.Frame(notebook, padding=10)
         notebook.add(robot_frame, text="默认机器人")
@@ -537,6 +558,7 @@ class AIGroupChatGUI:
 
             self.config_manager.set("proxy", self.proxy_var.get())
             self.config_manager.set("allow_ai_conversations", self.allow_ai_conv_var.get())
+            self.config_manager.set("no_history", self.no_history_var.get())
 
             try:
                 max_turns = int(self.max_turns_var.get())
@@ -570,13 +592,15 @@ class AIGroupChatGUI:
             max_turns = self.config_manager.get("max_ai_conversation_turns", 10)
             loop_status = "启用" if self.infinite_loop else "禁用"
             dev_status = "启用" if self.dev_mode else "禁用"
-            self.status_var.set(f"API连接成功 | 已加载机器人: {len(self.active_robots)} 个 | 最大轮次: {max_turns} | 无限轮回: {loop_status} | 开发者模式: {dev_status}")
+            no_history_status = "启用" if self.config_manager.get("no_history") else "禁用"
+            self.status_var.set(f"API连接成功 | 已加载机器人: {len(self.active_robots)} 个 | 最大轮次: {max_turns} | 无限轮回: {loop_status} | 开发者模式: {dev_status} | 不发送历史记录: {no_history_status}")
             return True
         except Exception as e:
             max_turns = self.config_manager.get("max_ai_conversation_turns", 10)
             loop_status = "启用" if self.infinite_loop else "禁用"
             dev_status = "启用" if self.dev_mode else "禁用"
-            self.status_var.set(f"API初始化失败 | 已加载机器人: {len(self.active_robots)} 个 | 最大轮次: {max_turns} | 无限轮回: {loop_status} | 开发者模式: {dev_status}")
+            no_history_status = "启用" if self.config_manager.get("no_history") else "禁用"
+            self.status_var.set(f"API初始化失败 | 已加载机器人: {len(self.active_robots)} 个 | 最大轮次: {max_turns} | 无限轮回: {loop_status} | 开发者模式: {dev_status} | 不发送历史记录: {no_history_status}")
             messagebox.showerror("API错误", f"创建AI客户端失败: {str(e)}")
             return False
 
@@ -614,6 +638,8 @@ class AIGroupChatGUI:
 - 如果消息 @ 了其他机器人，你看不到也不能回应。
 - 如果消息 @ 了你，你必须回应。
 - 如果消息是公开的（无 @），你可以选择回应（根据系统设置）。
+- 重要规则：绝对不能 @ 自己，@ 自己的消息不会发送，算结束对话。
+
 回复时直接发表你的观点，不要在开头添加你的名字或任何前缀，你的名字会自动标记。""",
                 name="系统"
             ))
@@ -622,7 +648,8 @@ class AIGroupChatGUI:
         max_turns = self.config_manager.get("max_ai_conversation_turns", 10)
         loop_status = "启用" if self.infinite_loop else "禁用"
         dev_status = "启用" if self.dev_mode else "禁用"
-        self.status_var.set(f"就绪 | 已加载机器人: {len(self.active_robots)} 个 | 最大轮次: {max_turns} | 无限轮回: {loop_status} | 开发者模式: {dev_status}")
+        no_history_status = "启用" if self.config_manager.get("no_history") else "禁用"
+        self.status_var.set(f"就绪 | 已加载机器人: {len(self.active_robots)} 个 | 最大轮次: {max_turns} | 无限轮回: {loop_status} | 开发者模式: {dev_status} | 不发送历史记录: {no_history_status}")
 
     def update_robot_list(self) -> None:
         self.robot_listbox.delete(0, tk.END)
@@ -694,6 +721,17 @@ class AIGroupChatGUI:
 
         self.message_queue.put(user_message)
 
+        # 检查用户是否 @ 了自己
+        if target == user_name:
+            self.message_queue.put(
+                Message(
+                    role=Role.SYSTEM,
+                    content=f"注意：@ 自己的消息不会发送给任何人。",
+                    name="系统"
+                )
+            )
+            return
+
         if self.active_robots and self.ai_client:
             threading.Thread(target=self.trigger_ai_responses, args=(user_message,), daemon=True).start()
         else:
@@ -751,6 +789,22 @@ class AIGroupChatGUI:
                 dev_text.insert(tk.END, "-"*50 + "\n")
 
             dev_text.config(state=tk.DISABLED)
+
+    def get_robot_client(self, robot_config: RobotConfig) -> AIClient:
+        """获取机器人专用的AI客户端，如果没有专用配置则使用全局配置"""
+        api_key = robot_config.api_key or self.config_manager.get("api_key")
+        base_url = robot_config.base_url or self.config_manager.get("base_url")
+        model = robot_config.model or self.config_manager.get("model")
+        timeout = self.config_manager.get("timeout")
+        proxy = self.config_manager.get("proxy")
+
+        return AIClient(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            proxy=proxy,
+            model=model
+        )
 
     def trigger_ai_responses(self, last_message: Message, is_ai_message: bool = False) -> None:
         self.ai_processing = True
@@ -818,6 +872,8 @@ class AIGroupChatGUI:
 - 如果消息 @ 了其他机器人，你看不到也不能回应。
 - 如果消息 @ 了你，你必须回应。
 - 如果消息是公开的（无 @），你可以选择回应（根据系统设置）。
+- 重要规则：绝对不能 @ 自己，@ 自己的消息不会发送，算结束对话。
+
 回复时直接发表你的观点，不要在开头添加你的名字或任何前缀，你的名字会自动标记。"""
 
                 robot_specific_history.append(Message(
@@ -826,34 +882,53 @@ class AIGroupChatGUI:
                     name="系统"
                 ))
 
-                for msg in self.chat_history:
-                    if msg.role == Role.SYSTEM:
-                        if msg.content.startswith("机器人 "):
-                            continue
-                        robot_specific_history.append(msg)
-                    elif msg.target is None:  # 公开消息，所有机器人都能看到
-                        robot_specific_history.append(msg)
-                    elif msg.target == robot_name:  # 只有被 @ 的机器人能看到
-                        robot_specific_history.append(msg)
-                    elif msg.name == robot_name:  # 机器人自己发送的消息（回应）
-                        robot_specific_history.append(msg)
+                # 添加当前消息
+                robot_specific_history.append(last_message)
+
+                # 如果没有开启"不发送历史记录"选项，则添加历史记录
+                if not self.config_manager.get("no_history"):
+                    for msg in reversed(self.chat_history):
+                        if msg.role == Role.SYSTEM:
+                            if msg.content.startswith("机器人 "):
+                                continue
+                            robot_specific_history.insert(0, msg)
+                        elif msg.target is None:  # 公开消息，所有机器人都能看到
+                            robot_specific_history.insert(0, msg)
+                        elif msg.target == robot_name:  # 只有被 @ 的机器人能看到
+                            robot_specific_history.insert(0, msg)
+                        elif msg.name == robot_name:  # 机器人自己发送的消息（回应）
+                            robot_specific_history.insert(0, msg)
 
                 # 如果开启开发者模式，显示该AI的专属窗口
                 if self.dev_mode:
                     self.root.after(0, lambda rn=robot_name, rh=robot_specific_history: self.show_robot_dev_window(rn, rh))
 
                 try:
+                    # 获取机器人专用的AI客户端
+                    robot_client = self.get_robot_client(robot_config)
+
                     request = ChatCompletionRequest(
-                        model=self.ai_client.model,
+                        model=robot_client.model,
                         messages=robot_specific_history,
                         temperature=0.7
                     )
 
-                    response = self.ai_client.chat_completion(request, robot_name)
+                    response = robot_client.chat_completion(request, robot_name)
 
                     if response.choices and len(response.choices) > 0:
                         ai_response = response.choices[0].message
                         content, target = self.parse_mention(ai_response.content)
+
+                        # 检查AI是否@了自己
+                        if target == robot_name:
+                            self.message_queue.put(
+                                Message(
+                                    role=Role.SYSTEM,
+                                    content=f"注意：{robot_name} @ 了自己，消息不会发送。",
+                                    name="系统"
+                                )
+                            )
+                            continue
 
                         name_prefix = f"{robot_name}:"
                         if content.startswith(name_prefix):
@@ -889,8 +964,9 @@ class AIGroupChatGUI:
             max_turns = self.config_manager.get("max_ai_conversation_turns", 10)
             loop_status = "启用" if self.infinite_loop else "禁用"
             dev_status = "启用" if self.dev_mode else "禁用"
+            no_history_status = "启用" if self.config_manager.get("no_history") else "禁用"
             self.root.after(0, lambda: self.status_var.set(
-                f"就绪 | 已加载机器人: {len(self.active_robots)} 个 | 当前轮次: {self.ai_conversation_turns}/{max_turns} | 无限轮回: {loop_status} | 开发者模式: {dev_status}")
+                f"就绪 | 已加载机器人: {len(self.active_robots)} 个 | 当前轮次: {self.ai_conversation_turns}/{max_turns} | 无限轮回: {loop_status} | 开发者模式: {dev_status} | 不发送历史记录: {no_history_status}")
             )
 
     def on_enter_press(self, event) -> str:
@@ -909,11 +985,12 @@ class AIGroupChatGUI:
         max_turns = self.config_manager.get("max_ai_conversation_turns", 10)
         loop_status = "启用" if self.infinite_loop else "禁用"
         dev_status = "启用" if self.dev_mode else "禁用"
+        no_history_status = "启用" if self.config_manager.get("no_history") else "禁用"
 
         system_messages = [msg for msg in self.chat_history
                           if msg.role == Role.SYSTEM and msg.content.startswith("机器人 ")]
         self.chat_history = system_messages
-        self.status_var.set(f"聊天记录已清空 | 已加载机器人: {len(self.active_robots)} 个 | 当前轮次: {self.ai_conversation_turns}/{max_turns} | 无限轮回: {loop_status} | 开发者模式: {dev_status}")
+        self.status_var.set(f"聊天记录已清空 | 已加载机器人: {len(self.active_robots)} 个 | 当前轮次: {self.ai_conversation_turns}/{max_turns} | 无限轮回: {loop_status} | 开发者模式: {dev_status} | 不发送历史记录: {no_history_status}")
 
     def save_user_name(self) -> None:
         new_name = self.user_name_var.get().strip()
@@ -937,7 +1014,7 @@ class AIGroupChatGUI:
 
         editor_window = tk.Toplevel(self.root)
         editor_window.title(f"{'新建' if is_new else '编辑'}机器人")
-        editor_window.geometry("600x550")
+        editor_window.geometry("600x650")
         editor_window.transient(self.root)
         editor_window.grab_set()
         frame = ttk.Frame(editor_window, padding="20")
@@ -964,7 +1041,18 @@ class AIGroupChatGUI:
                 update_color_preview()
 
         ttk.Button(frame, text="选择颜色", command=choose_color).grid(row=1, column=2, padx=5)
-        ttk.Label(frame, text="提示词文件:").grid(row=2, column=0, sticky=tk.W, pady=5)
+
+        # 添加API配置选项
+        ttk.Label(frame, text="API密钥(可选):").grid(row=2, column=0, sticky=tk.W, pady=5)
+        api_key_var = tk.StringVar(value=robot_config.api_key or "")
+        ttk.Entry(frame, textvariable=api_key_var, width=40).grid(row=2, column=1, pady=5)
+        ttk.Label(frame, text="API地址(可选):").grid(row=3, column=0, sticky=tk.W, pady=5)
+        base_url_var = tk.StringVar(value=robot_config.base_url or "")
+        ttk.Entry(frame, textvariable=base_url_var, width=40).grid(row=3, column=1, pady=5)
+        ttk.Label(frame, text="模型(可选):").grid(row=4, column=0, sticky=tk.W, pady=5)
+        model_var = tk.StringVar(value=robot_config.model or "")
+        ttk.Entry(frame, textvariable=model_var, width=40).grid(row=4, column=1, pady=5)
+        ttk.Label(frame, text="提示词文件:").grid(row=5, column=0, sticky=tk.W, pady=5)
         prompt_files = self.config_manager.list_prompts()
         prompt_file_var = tk.StringVar(value=robot_config.prompt_file or "")
 
@@ -977,12 +1065,12 @@ class AIGroupChatGUI:
                     prompt_text.insert(tk.END, content)
 
         prompt_file_combo = ttk.Combobox(frame, textvariable=prompt_file_var, values=prompt_files, width=37)
-        prompt_file_combo.grid(row=2, column=1, pady=5)
+        prompt_file_combo.grid(row=5, column=1, pady=5)
         prompt_file_combo.bind("<<ComboboxSelected>>", load_selected_prompt)
-        ttk.Button(frame, text="刷新", command=lambda: prompt_file_combo.config(values=self.config_manager.list_prompts())).grid(row=2, column=2, padx=5)
-        ttk.Label(frame, text="提示词内容:").grid(row=3, column=0, sticky=tk.NW, pady=5)
-        prompt_text = scrolledtext.ScrolledText(frame, wrap=tk.WORD, height=15, width=50)
-        prompt_text.grid(row=3, column=1, pady=5)
+        ttk.Button(frame, text="刷新", command=lambda: prompt_file_combo.config(values=self.config_manager.list_prompts())).grid(row=5, column=2, padx=5)
+        ttk.Label(frame, text="提示词内容:").grid(row=6, column=0, sticky=tk.NW, pady=5)
+        prompt_text = scrolledtext.ScrolledText(frame, wrap=tk.WORD, height=12, width=50)
+        prompt_text.grid(row=6, column=1, pady=5)
         prompt_text.insert(tk.END, robot_config.prompt)
         def save_current_prompt():
             content = prompt_text.get("1.0", tk.END).strip()
@@ -998,9 +1086,9 @@ class AIGroupChatGUI:
             if filename:
                 self.config_manager.save_prompt(os.path.basename(filename), content)
                 prompt_file_combo.config(values=self.config_manager.list_prompts())
-        ttk.Button(frame, text="保存提示词到文件", command=save_current_prompt).grid(row=4, column=1, pady=5, sticky=tk.W)
+        ttk.Button(frame, text="保存提示词到文件", command=save_current_prompt).grid(row=7, column=1, pady=5, sticky=tk.W)
         behavior_frame = ttk.LabelFrame(frame, text="机器人行为")
-        behavior_frame.grid(row=5, column=0, columnspan=2, sticky=tk.W, pady=10, padx=5)
+        behavior_frame.grid(row=8, column=0, columnspan=2, sticky=tk.W, pady=10, padx=5)
 
         enabled_var = tk.BooleanVar(value=robot_config.enabled)
         ttk.Checkbutton(behavior_frame, text="默认启用", variable=enabled_var).grid(row=0, column=0, sticky=tk.W, pady=5, padx=10)
@@ -1038,7 +1126,10 @@ class AIGroupChatGUI:
                 enabled=enabled_var.get(),
                 auto_respond_to_ai=auto_respond_var.get(),
                 auto_respond_to_all=auto_respond_all_var.get(),
-                color=color_var.get()
+                color=color_var.get(),
+                api_key=api_key_var.get().strip() or None,
+                base_url=base_url_var.get().strip() or None,
+                model=model_var.get().strip() or None
             )
             if self.config_manager.save_robot(new_config):
                 if new_config.enabled:
@@ -1050,11 +1141,12 @@ class AIGroupChatGUI:
                 max_turns = self.config_manager.get("max_ai_conversation_turns", 10)
                 loop_status = "启用" if self.infinite_loop else "禁用"
                 dev_status = "启用" if self.dev_mode else "禁用"
-                self.status_var.set(f"就绪 | 已加载机器人: {len(self.active_robots)} 个 | 当前轮次: {self.ai_conversation_turns}/{max_turns} | 无限轮回: {loop_status} | 开发者模式: {dev_status}")
+                no_history_status = "启用" if self.config_manager.get("no_history") else "禁用"
+                self.status_var.set(f"就绪 | 已加载机器人: {len(self.active_robots)} 个 | 当前轮次: {self.ai_conversation_turns}/{max_turns} | 无限轮回: {loop_status} | 开发者模式: {dev_status} | 不发送历史记录: {no_history_status}")
                 messagebox.showinfo("成功", f"机器人{'创建' if is_new else '更新'}成功")
                 editor_window.destroy()
         button_frame = ttk.Frame(frame)
-        button_frame.grid(row=6, column=0, columnspan=2, pady=20)
+        button_frame.grid(row=9, column=0, columnspan=2, pady=20)
         ttk.Button(button_frame, text="保存", command=save_robot).pack(side=tk.LEFT, padx=10)
         ttk.Button(button_frame, text="取消", command=editor_window.destroy).pack(side=tk.LEFT, padx=10)
 
@@ -1084,7 +1176,8 @@ class AIGroupChatGUI:
                 max_turns = self.config_manager.get("max_ai_conversation_turns", 10)
                 loop_status = "启用" if self.infinite_loop else "禁用"
                 dev_status = "启用" if self.dev_mode else "禁用"
-                self.status_var.set(f"就绪 | 已加载机器人: {len(self.active_robots)} 个 | 当前轮次: {self.ai_conversation_turns}/{max_turns} | 无限轮回: {loop_status} | 开发者模式: {dev_status}")
+                no_history_status = "启用" if self.config_manager.get("no_history") else "禁用"
+                self.status_var.set(f"就绪 | 已加载机器人: {len(self.active_robots)} 个 | 当前轮次: {self.ai_conversation_turns}/{max_turns} | 无限轮回: {loop_status} | 开发者模式: {dev_status} | 不发送历史记录: {no_history_status}")
 
 if __name__ == "__main__":
     root = tk.Tk()
